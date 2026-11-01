@@ -6,5 +6,5 @@
 // This key is safe to publish: the database rules (RLS) only let each
 // signed-in person read and change their own data.
 // Never paste the secret key (sb_secret_...) or the service_role key here.
-export const SUPABASE_URL = "https://ocxiisdmzwlzovuuaqnl.supabase.co/rest/v1/";
+export const SUPABASE_URL = "https://ocxiisdmzwlzovuuaqnl.supabase.co";
 export const SUPABASE_ANON_KEY = "sb_publishable_8ix9a5g8B8QmSVtVSagpYg_mk29qfaP";
