@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Graded Reader EN</title>
+<meta name="description" content="Read graded English stories, listen while you read, and review your words.">
+<meta name="theme-color" content="#2c4bd6">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="offline" id="offline" hidden>Offline — changes will sync when you're back online</div>
+<header class="top" id="top" hidden><div class="top-in">
+  <a class="brand" href="#library">Graded Reader <span class="en">EN</span></a>
+  <span class="sync" id="sync"><i></i><span>Connecting…</span></span>
+  <nav class="tabs" aria-label="Sections">
+    <a href="#library" data-v="library">Library</a>
+    <a href="#words" data-v="words">Words<span class="count" id="dueCount" hidden></span></a>
+    <a href="#add" data-v="add">Add</a>
+  </nav>
+</div></header>
+<main id="main"><p class="muted">Loading…</p></main>
+<div class="bar" id="bar" hidden></div>
+<div class="sheet" id="sheet" hidden></div>
+<div class="toast" id="toast" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
