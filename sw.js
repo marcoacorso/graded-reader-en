@@ -1,6 +1,6 @@
 // Keeps the app itself available offline. Audio is cached separately by the app (IndexedDB).
 // Bump VERSION whenever you change app files, so phones pick up the new version.
-const VERSION = "gre-v2";
+const VERSION = "gre-v3";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "stories.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
 const CDN = ["https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm"];
 

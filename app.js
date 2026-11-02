@@ -456,10 +456,16 @@ function openSheet(el) {
   const s = getStory(current), g = el.dataset.g, raw = g || el.dataset.w;
   const entry = g ? s.glossary[g] : null;
   const saved = S.words.find(w => w.word.toLowerCase() === raw.toLowerCase());
-  sheetWord = { word: raw, sentence: el.closest(".s")?.textContent.trim() || "", story_id: s.id, story_title: s.title, def: saved?.def || entry?.def || "", pt: saved?.pt || entry?.pt || "", fromGloss: !!entry, tr: trCached(el.closest(".s")?.textContent.trim() || "") };
+  const sentence = el.closest(".s")?.textContent.trim() || "";
+  const para = el.closest("p")?.textContent.trim().slice(0, 1200) || "";
+  sheetWord = { word: raw, sentence, para, story_id: s.id, story_title: s.title, def: saved?.def || entry?.def || "", pt: saved?.pt || entry?.pt || "", fromGloss: !!entry, ...(trCached("sentence", sentence) ? { tr: trCached("sentence", sentence).pt, trBy: trCached("sentence", sentence).by } : {}) };
   drawSheet();
-  // fill the Portuguese for words without a glossary entry (short, cached)
-  if (!sheetWord.pt && navigator.onLine) { const w = sheetWord; translate(raw).then(pt => { if (sheetWord === w && !w.pt) { keepInputs(); w.pt = pt; w.ptAuto = true; drawSheet(); } }).catch(() => {}); }
+  // words without a glossary entry or saved meaning: translate in the context of this sentence
+  if (!sheetWord.pt && navigator.onLine) {
+    const w = sheetWord; w.ptLoading = true; drawSheet();
+    smartTranslate("word", raw, sentence).then(r => { if (sheetWord !== w) return; keepInputs(); if (!w.pt) w.pt = r.pt; if (!w.def && r.def) w.def = r.def; w.ptAuto = true; w.ptBy = r.by; })
+      .catch(() => {}).finally(() => { if (sheetWord === w) { keepInputs(); w.ptLoading = false; drawSheet(); } });
+  }
 }
 function keepInputs() { if (sheetWord && $("#wdef")) { sheetWord.def = $("#wdef").value.trim(); sheetWord.pt = $("#wpt").value.trim(); } }
 function drawSheet() {
@@ -469,12 +475,12 @@ function drawSheet() {
   $("#sheet").innerHTML = `<div class="sheet-card" role="dialog" aria-label="Word: ${esc(w.word)}">
     <div class="hw"><b>${esc(w.word)}</b><button class="chip" data-act="say" aria-label="Hear the word">▶ Hear</button><button class="x" data-act="close" aria-label="Close">×</button></div>
     ${editable ? `<label for="wdef">Meaning<input type="text" id="wdef" value="${esc(w.def)}" placeholder="Meaning in simple English (optional)"></label>
-      <label for="wpt">Portuguese${w.ptAuto ? ` <span class="note">· automatic, edit if needed</span>` : ""}<input type="text" id="wpt" value="${esc(w.pt)}" placeholder="Tradução"></label>
+      <label for="wpt">Portuguese${w.ptLoading ? ` <span class="note">· translating…</span>` : w.ptAuto ? ` <span class="note">· ${byName(w.ptBy)}, edit if needed</span>` : ""}<input type="text" id="wpt" value="${esc(w.pt)}" placeholder="Tradução"></label>
       <div class="links"><a href="https://dictionary.cambridge.org/dictionary/english-portuguese/${encodeURIComponent(w.word.split(" ")[0])}" target="_blank" rel="noopener">Cambridge dictionary ↗</a></div>`
       : `<div class="def">${esc(w.def)}</div>${w.pt ? `<div class="pt">${esc(w.pt)}</div>` : ""}`}
     <div class="sent">
       <div class="sent-en">${esc(w.sentence)}</div>
-      ${w.tr ? `<div class="sent-pt">${esc(w.tr)}</div>`
+      ${w.tr ? `<div class="sent-pt">${esc(w.tr)}</div><div class="note">${byName(w.trBy)}</div>`
         : w.trLoading ? `<div class="status">Translating…</div>`
         : `<button class="chip" data-act="tr-sentence">Translate this sentence</button>`}
       ${w.trErr ? `<div class="status err">${esc(w.trErr)} <a href="${gt}" target="_blank" rel="noopener">Open in Google Translate ↗</a></div>` : ""}
@@ -484,17 +490,20 @@ function drawSheet() {
   $("#sheet").hidden = false;
 }
 
-/* ---------- translation (MyMemory free API, cached on the device) ---------- */
-const trStore = lsGet("gre-tr", {});
-function trCached(text) { return trStore[text] || ""; }
+/* ---------- translation ----------
+   1st choice: your Supabase function "translate" (Claude or DeepL, keys kept on the server).
+   Fallback when it isn't set up or fails: MyMemory (free, lower quality). Results are cached on the device. */
+const trStore = lsGet("gre-tr2", {});
+const trKey = (kind, text, ctx = "") => kind + "|" + text + (kind === "word" ? "|" + ctx : "");
+function trCached(kind, text, ctx) { return trStore[trKey(kind, text, ctx)] || null; }
+const byName = by => ({ claude: "translated by Claude", deepl: "translated by DeepL", mymemory: "basic translation (MyMemory)" }[by] || "automatic");
 const decodeHTML = s => { const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
 export function chunkText(text, max = 450) {
   const out = []; let rest = text.trim();
   while (rest.length > max) { let cut = rest.lastIndexOf(", ", max); if (cut < max * 0.5) cut = rest.lastIndexOf(" ", max); if (cut <= 0) cut = max; out.push(rest.slice(0, cut + 1).trim()); rest = rest.slice(cut + 1).trim(); }
   if (rest) out.push(rest); return out;
 }
-async function translate(text) {
-  if (trStore[text]) return trStore[text];
+async function myMemory(text) {
   const parts = [];
   for (const c of chunkText(text)) {
     const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(c)}&langpair=en|pt-BR${TR_EMAIL ? `&de=${encodeURIComponent(TR_EMAIL)}` : ""}`);
@@ -503,14 +512,32 @@ async function translate(text) {
     if (!r.ok || +j?.responseStatus !== 200 || /MYMEMORY WARNING|QUOTA/i.test(txt)) throw new Error(/QUOTA|WARNING/i.test(txt + (j?.responseDetails || "")) ? "Today's free translation limit is used up." : "Couldn't translate right now.");
     parts.push(decodeHTML(txt));
   }
-  const out = parts.join(" ");
-  trStore[text] = out; const keys = Object.keys(trStore); if (keys.length > 800) delete trStore[keys[0]];
-  lsSet("gre-tr", trStore); return out;
+  return parts.join(" ");
+}
+let fnState = "unknown"; // "ok" | "missing"
+async function smartTranslate(kind, text, ctx = "") {
+  const k = trKey(kind, text, ctx);
+  if (trStore[k]) return trStore[k];
+  let res = null, fnErr = "";
+  if (fnState !== "missing") {
+    const { data, error } = await sb.functions.invoke("translate", { body: { kind, text, context: ctx } });
+    if (!error && data?.pt) { res = { pt: data.pt, def: data.def || "", by: data.by }; fnState = "ok"; }
+    else {
+      const status = error?.context?.status;
+      if (status === 404) fnState = "missing";
+      try { fnErr = (await error?.context?.json())?.error || ""; } catch {}
+      console.warn("translate function:", status, fnErr || error?.message);
+    }
+  }
+  if (!res) res = { pt: await myMemory(text), def: "", by: "mymemory", note: fnErr };
+  if (res.by !== "mymemory") { trStore[k] = res; const keys = Object.keys(trStore); if (keys.length > 1500) delete trStore[keys[0]]; lsSet("gre-tr2", trStore); }
+  return res;
 }
 async function translateSentence() {
   const w = sheetWord; if (!w) return;
   keepInputs(); w.trLoading = true; w.trErr = ""; drawSheet();
-  try { w.tr = await translate(w.sentence); } catch (e) { w.trErr = navigator.onLine ? e.message : "You're offline."; }
+  try { const r = await smartTranslate("sentence", w.sentence, w.para); w.tr = r.pt; w.trBy = r.by; }
+  catch (e) { w.trErr = navigator.onLine ? e.message : "You're offline."; }
   w.trLoading = false; if (sheetWord === w) drawSheet();
 }
 function closeSheet() { sheetWord = null; $("#sheet").hidden = true; }
