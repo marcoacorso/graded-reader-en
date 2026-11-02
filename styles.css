@@ -164,3 +164,12 @@ input[type=email],input[type=password]{border:1px solid var(--line);background:v
 .pill.ok{color:var(--good);border-color:var(--good)}
 .account{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:.85rem;color:var(--muted);margin-top:36px;border-top:1px solid var(--line);padding-top:16px}
 .offline{background:var(--ink);color:var(--surface);text-align:center;font-size:.8rem;padding:4px}
+/* sentence translation in the word sheet */
+.sent{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.sent-en{font-family:var(--f-read);font-size:.95rem;font-style:italic;color:var(--muted)}
+.sent-pt{font-family:var(--f-read);font-size:1rem;background:var(--soft);border-radius:8px;padding:8px 10px;width:100%}
+.sheet-card{max-height:calc(100vh - 120px);overflow-y:auto}
+/* audio sync */
+.sync-hint{font-size:.85rem;background:var(--soft);border-radius:10px;padding:10px 12px;margin-bottom:14px}
+.text.syncing .s{cursor:pointer;outline:1px dashed var(--line);outline-offset:1px}
+.text.syncing .s:hover{background:var(--soft)}

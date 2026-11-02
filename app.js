@@ -1,5 +1,7 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm";
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
+import * as CFG from "./config.js";
+const { SUPABASE_URL, SUPABASE_ANON_KEY } = CFG;
+const TR_EMAIL = CFG.MYMEMORY_EMAIL || ""; // optional: raises the free translation limit
 import { STORIES } from "./stories.js";
 
 const configured = !SUPABASE_URL.includes("YOUR-PROJECT") && !SUPABASE_ANON_KEY.includes("YOUR-ANON");
@@ -215,7 +217,7 @@ function cardHTML(s) {
 }
 
 /* ---------- reader ---------- */
-let sentences = [], idx = 0, playing = false, mode = "tts", mp3 = null, mp3URL = null;
+let sentences = [], idx = 0, playing = false, mode = "tts", mp3 = null, mp3URL = null, starts = null, syncMode = false;
 export function splitSentences(p) { return p.match(/[^.!?]+(?:[.!?]+["”’)]*|$)\s*/g)?.filter(x => x.trim()) || [p]; }
 export function tokenizeSentence(text, gloss) {
   const keys = Object.keys(gloss || {}).map(k => ({ k, parts: k.toLowerCase().split(/\s+/) })).sort((a, b) => b.parts.length - a.parts.length);
@@ -247,7 +249,7 @@ function renderReader() {
   for (const p of s.paragraphs) html += "<p>" + splitSentences(p).map(se => { const i = sentences.push(se.trim()) - 1; return `<span class="s" data-i="${i}">${tokenizeSentence(se, s.glossary)}</span>`; }).join("") + "</p>";
   const w = s.paragraphs.reduce((n, p) => n + wordsIn(p), 0), p = S.progress.get(s.id);
   idx = Math.min(p?.pos || 0, Math.max(0, sentences.length - 1));
-  mode = s.audio_path ? "mp3" : "tts";
+  mode = s.audio_path ? "mp3" : "tts"; starts = null; syncMode = false;
   const own = s.source !== "built-in";
   m.innerHTML = `<article class="reader">
     <a class="back" href="#library">← Library</a>
@@ -259,7 +261,8 @@ function renderReader() {
     </header>
     ${own ? `<div class="audio-note" id="audioNote">${s.audio_path ? `<span class="pill" id="audioState">Loading audio…</span>` : `<span>No audio yet — the computer voice reads it.</span>`}
       <label class="linkbtn" for="addAudio" style="cursor:pointer;flex-direction:row">${s.audio_path ? "Replace audio" : "Add audio (.mp3)"}</label><input type="file" id="addAudio" accept="audio/*" hidden>
-      ${s.audio_path ? `<button class="linkbtn" data-act="use-${mode === "mp3" ? "tts" : "mp3"}">Use computer voice</button>` : ""}</div>` : ""}
+      ${s.audio_path ? `<button class="linkbtn" data-act="sync-mode" id="syncBtn" hidden>Fix the highlight</button><button class="linkbtn" data-act="use-${mode === "mp3" ? "tts" : "mp3"}">Use computer voice</button>` : ""}</div>
+      <div class="sync-hint" id="syncHint" hidden>While the audio plays, tap a sentence at the moment you hear it begin. The sentences after it move with it. Tap <b>Done</b> when the highlight follows the voice.</div>` : ""}
     <div class="text" id="text">${html}</div>
     <section class="endbox">
       ${s.questions?.length ? `<h2>Check your understanding</h2>${s.questions.map((q, qi) => `<div class="q"><p>${qi + 1}. ${esc(q.q)}</p><div class="opts">${q.options.map((o, oi) => `<button class="opt" data-q="${qi}" data-o="${oi}">${esc(o)}</button>`).join("")}</div></div>`).join("")}` : ""}
@@ -282,7 +285,8 @@ async function loadMp3(s) {
     mp3URL = URL.createObjectURL(blob);
     mp3 = new Audio(mp3URL); mp3.preload = "auto"; mp3.playbackRate = +lsGet("gre-rate", 0.9);
     const savedT = +lsGet("gre-mp3pos-" + s.id, 0); if (savedT) mp3.currentTime = savedT;
-    mp3.ontimeupdate = () => { updateMp3Bar(); if (Math.floor(mp3.currentTime) % 5 === 0) lsSet("gre-mp3pos-" + s.id, mp3.currentTime); };
+    mp3.ontimeupdate = () => { updateMp3Bar(); followAudio(); if (Math.floor(mp3.currentTime) % 5 === 0) lsSet("gre-mp3pos-" + s.id, mp3.currentTime); };
+    const meta = new Promise(r => { if (mp3.readyState >= 1) r(); else mp3.addEventListener("loadedmetadata", r, { once: true }); });
     mp3.onloadedmetadata = updateMp3Bar;
     mp3.onplay = () => { playing = true; renderBar(); }; mp3.onpause = () => { playing = false; renderBar(); };
     mp3.onended = () => { lsSet("gre-mp3pos-" + s.id, 0); };
@@ -293,11 +297,92 @@ async function loadMp3(s) {
     }
     if (st()) { st().textContent = "Audio saved on this device"; st().classList.add("ok"); }
     renderBar();
+    // sentence timings: reuse saved ones, otherwise work them out from the pauses in the recording
+    const saved = s.timings?.starts;
+    if (Array.isArray(saved) && saved.length === sentences.length) starts = saved.slice();
+    else {
+      if (st()) { st().textContent = "Matching the audio to the text…"; st().classList.remove("ok"); }
+      try { const info = await analyzeAudio(blob); if (current !== s.id) return; starts = alignSentences(sentences.map(x => x.length), info); }
+      catch (e) { console.warn("audio analysis failed", e); await meta; if (current !== s.id) return; starts = proportionalStarts(sentences.map(x => x.length), mp3.duration || 0); }
+      saveTimings(s.id);
+      if (st()) { st().textContent = "Audio saved on this device"; st().classList.add("ok"); }
+    }
+    const sb2 = $("#syncBtn"); if (sb2) sb2.hidden = false;
+    renderBar(); followAudio(true);
   } catch (e) { console.warn(e); if (st()) st().textContent = navigator.onLine ? "Couldn't load the audio" : "Audio not downloaded yet — connect once to save it offline"; mode = "tts"; renderBar(); }
 }
 function markSavedWords() {
   const saved = new Set(S.words.map(w => w.word.toLowerCase()));
   document.querySelectorAll("#text .w").forEach(el => el.classList.toggle("saved", saved.has((el.dataset.g || el.dataset.w || "").toLowerCase())));
+}
+
+/* ---------- MP3 ↔ text: which sentence is being spoken ---------- */
+// Energy per 20 ms frame → leading/trailing speech and the pauses between phrases.
+export function detectPauses(data, rate) {
+  const f = Math.max(1, Math.round(rate * 0.02)), n = Math.floor(data.length / f), e = new Float32Array(n);
+  for (let i = 0; i < n; i++) { let s = 0; for (let j = i * f, k = j + f; j < k; j++) s += data[j] * data[j]; e[i] = Math.sqrt(s / f); }
+  const sorted = Array.from(e).sort((a, b) => a - b), q = p => sorted[Math.min(n - 1, Math.floor(p * n))] || 0;
+  const thr = q(0.1) + (q(0.6) - q(0.1)) * 0.2;
+  let first = 0; while (first < n - 3 && !(e[first] > thr && e[first + 1] > thr && e[first + 2] > thr)) first++;
+  let last = n - 1; while (last > first && e[last] <= thr) last--;
+  const pauses = []; let run = 0;
+  for (let i = first; i <= last; i++) {
+    if (e[i] <= thr) run++;
+    else { if (run >= 8) pauses.push({ t: i * 0.02, len: run * 0.02 }); run = 0; }
+  }
+  return { start: first * 0.02, end: (last + 1) * 0.02, pauses, dur: n * 0.02 };
+}
+// Predict each sentence start from its length, then snap it to the nearest real pause.
+export function alignSentences(lens, info) {
+  const n = lens.length, total = lens.reduce((a, b) => a + b, 0) || 1;
+  const spc = Math.max(0.01, (info.end - info.start) / total), out = [info.start];
+  for (let i = 1; i < n; i++) {
+    const prevDur = lens[i - 1] * spc, pred = out[i - 1] + prevDur, win = Math.max(1.5, prevDur * 0.35);
+    let best = null, bestScore = -Infinity;
+    for (const p of info.pauses) {
+      if (p.t < pred - win) continue; if (p.t > pred + win) break;
+      if (p.t <= out[i - 1] + 0.3) continue;
+      const score = p.len * 2 - Math.abs(p.t - pred);
+      if (score > bestScore) { bestScore = score; best = p; }
+    }
+    out.push(+(best ? best.t : Math.max(pred, out[i - 1] + 0.3)).toFixed(2));
+  }
+  return out;
+}
+export function proportionalStarts(lens, dur) {
+  const total = lens.reduce((a, b) => a + b, 0) || 1; let acc = 0;
+  return lens.map(l => { const t = acc / total * dur; acc += l; return +t.toFixed(2); });
+}
+async function analyzeAudio(blob) {
+  const Ctx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const buf = await blob.arrayBuffer();
+  let ctx; try { ctx = new Ctx(1, 8000, 8000); } catch { ctx = new Ctx(1, 22050, 22050); }
+  const audio = await new Promise((res, rej) => { const p = ctx.decodeAudioData(buf, res, rej); if (p?.then) p.then(res, rej); });
+  return detectPauses(audio.getChannelData(0), audio.sampleRate);
+}
+let timingsTimer;
+function saveTimings(id) {
+  clearTimeout(timingsTimer);
+  const snap = starts.slice();
+  timingsTimer = setTimeout(() => { const row = S.texts.find(t => t.id === id); if (row) saveText({ ...row, timings: { v: 1, starts: snap } }); }, 800);
+}
+function sentenceAt(t) { let lo = 0, hi = starts.length - 1, ans = 0; while (lo <= hi) { const m = (lo + hi) >> 1; if (starts[m] <= t + 0.08) { ans = m; lo = m + 1; } else hi = m - 1; } return ans; }
+function followAudio(force) {
+  if (mode !== "mp3" || !mp3 || !starts) return;
+  const i = sentenceAt(mp3.currentTime);
+  if (i !== idx || force) { idx = i; setActive(i, !mp3.paused); rememberPos(); }
+}
+function anchorSentence(i) {
+  if (!mp3 || !starts) return;
+  const t = Math.max(0, mp3.currentTime - 0.3), delta = t - starts[i];
+  for (let j = i; j < starts.length; j++) starts[j] = +(starts[j] + delta).toFixed(2);
+  for (let j = i - 1; j >= 0; j--) if (starts[j] > starts[j + 1] - 0.2) starts[j] = Math.max(0, +(starts[j + 1] - 0.2).toFixed(2));
+  idx = i; setActive(i, false); saveTimings(current); toast(`Sentence ${i + 1} synced`);
+}
+function seekSentence(i) {
+  if (!mp3 || !starts) return;
+  i = Math.max(0, Math.min(starts.length - 1, i));
+  mp3.currentTime = starts[i]; idx = i; setActive(i);
 }
 
 /* ---------- player bar ---------- */
@@ -312,9 +397,9 @@ function renderBar() {
   const rateSel = `<select id="rate" aria-label="Speed">${[0.7, 0.8, 0.9, 1, 1.1, 1.25].map(r => `<option value="${r}" ${r == rate ? "selected" : ""}>${r}×</option>`).join("")}</select>`;
   if (mode === "mp3") {
     b.innerHTML = `<div class="bar-in">
-      <button class="ib" data-act="back10" aria-label="Back 10 seconds">${ICON.back10}</button>
+      ${starts ? `<button class="ib" data-act="sprev" aria-label="Previous sentence (tap twice quickly to go further back)">${ICON.prev}</button>` : `<button class="ib" data-act="back10" aria-label="Back 10 seconds">${ICON.back10}</button>`}
       <button class="ib play" data-act="play" aria-label="${playing ? "Pause" : "Play"}" ${mp3 ? "" : "disabled"}>${playing ? ICON.pause : ICON.play}</button>
-      <button class="ib" data-act="fwd10" aria-label="Forward 10 seconds">${ICON.fwd10}</button>
+      ${starts ? `<button class="ib" data-act="snext" aria-label="Next sentence">${ICON.next}</button>` : `<button class="ib" data-act="fwd10" aria-label="Forward 10 seconds">${ICON.fwd10}</button>`}
       <div class="prog"><span id="pos" class="audio-time">${mp3 ? `${fmtTime(mp3.currentTime)} / ${fmtTime(mp3.duration)}` : "Loading audio…"}</span><div class="track" id="seek" style="cursor:pointer"><i id="track"></i></div></div>
       ${rateSel}</div>`;
     updateMp3Bar(); return;
@@ -371,21 +456,62 @@ function openSheet(el) {
   const s = getStory(current), g = el.dataset.g, raw = g || el.dataset.w;
   const entry = g ? s.glossary[g] : null;
   const saved = S.words.find(w => w.word.toLowerCase() === raw.toLowerCase());
-  sheetWord = { word: raw, sentence: el.closest(".s")?.textContent.trim() || "", story_id: s.id, story_title: s.title, def: saved?.def || entry?.def || "", pt: saved?.pt || entry?.pt || "", fromGloss: !!entry };
+  sheetWord = { word: raw, sentence: el.closest(".s")?.textContent.trim() || "", story_id: s.id, story_title: s.title, def: saved?.def || entry?.def || "", pt: saved?.pt || entry?.pt || "", fromGloss: !!entry, tr: trCached(el.closest(".s")?.textContent.trim() || "") };
   drawSheet();
+  // fill the Portuguese for words without a glossary entry (short, cached)
+  if (!sheetWord.pt && navigator.onLine) { const w = sheetWord; translate(raw).then(pt => { if (sheetWord === w && !w.pt) { keepInputs(); w.pt = pt; w.ptAuto = true; drawSheet(); } }).catch(() => {}); }
 }
+function keepInputs() { if (sheetWord && $("#wdef")) { sheetWord.def = $("#wdef").value.trim(); sheetWord.pt = $("#wpt").value.trim(); } }
 function drawSheet() {
   const w = sheetWord, saved = S.words.find(x => x.word.toLowerCase() === w.word.toLowerCase());
   const editable = !w.fromGloss || saved;
+  const gt = `https://translate.google.com/?sl=en&tl=pt&text=${encodeURIComponent(w.sentence)}`;
   $("#sheet").innerHTML = `<div class="sheet-card" role="dialog" aria-label="Word: ${esc(w.word)}">
     <div class="hw"><b>${esc(w.word)}</b><button class="chip" data-act="say" aria-label="Hear the word">▶ Hear</button><button class="x" data-act="close" aria-label="Close">×</button></div>
-    ${editable ? `<label for="wdef">Meaning<input type="text" id="wdef" value="${esc(w.def)}" placeholder="Meaning in simple English"></label>
-      <label for="wpt">Portuguese<input type="text" id="wpt" value="${esc(w.pt)}" placeholder="Tradução"></label>
-      <div class="links"><a href="https://dictionary.cambridge.org/dictionary/english-portuguese/${encodeURIComponent(w.word.split(" ")[0])}" target="_blank" rel="noopener">Cambridge dictionary ↗</a><a href="https://translate.google.com/?sl=en&tl=pt&text=${encodeURIComponent(w.sentence)}" target="_blank" rel="noopener">Translate sentence ↗</a></div>`
+    ${editable ? `<label for="wdef">Meaning<input type="text" id="wdef" value="${esc(w.def)}" placeholder="Meaning in simple English (optional)"></label>
+      <label for="wpt">Portuguese${w.ptAuto ? ` <span class="note">· automatic, edit if needed</span>` : ""}<input type="text" id="wpt" value="${esc(w.pt)}" placeholder="Tradução"></label>
+      <div class="links"><a href="https://dictionary.cambridge.org/dictionary/english-portuguese/${encodeURIComponent(w.word.split(" ")[0])}" target="_blank" rel="noopener">Cambridge dictionary ↗</a></div>`
       : `<div class="def">${esc(w.def)}</div>${w.pt ? `<div class="pt">${esc(w.pt)}</div>` : ""}`}
+    <div class="sent">
+      <div class="sent-en">${esc(w.sentence)}</div>
+      ${w.tr ? `<div class="sent-pt">${esc(w.tr)}</div>`
+        : w.trLoading ? `<div class="status">Translating…</div>`
+        : `<button class="chip" data-act="tr-sentence">Translate this sentence</button>`}
+      ${w.trErr ? `<div class="status err">${esc(w.trErr)} <a href="${gt}" target="_blank" rel="noopener">Open in Google Translate ↗</a></div>` : ""}
+    </div>
     <div class="row"><button class="btn" data-act="save">${saved ? "Update" : "Save to my words"}</button>${saved ? `<button class="btn ghost" data-act="unsave">Remove</button>` : ""}</div>
   </div>`;
   $("#sheet").hidden = false;
+}
+
+/* ---------- translation (MyMemory free API, cached on the device) ---------- */
+const trStore = lsGet("gre-tr", {});
+function trCached(text) { return trStore[text] || ""; }
+const decodeHTML = s => { const t = document.createElement("textarea"); t.innerHTML = s; return t.value; };
+export function chunkText(text, max = 450) {
+  const out = []; let rest = text.trim();
+  while (rest.length > max) { let cut = rest.lastIndexOf(", ", max); if (cut < max * 0.5) cut = rest.lastIndexOf(" ", max); if (cut <= 0) cut = max; out.push(rest.slice(0, cut + 1).trim()); rest = rest.slice(cut + 1).trim(); }
+  if (rest) out.push(rest); return out;
+}
+async function translate(text) {
+  if (trStore[text]) return trStore[text];
+  const parts = [];
+  for (const c of chunkText(text)) {
+    const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(c)}&langpair=en|pt-BR${TR_EMAIL ? `&de=${encodeURIComponent(TR_EMAIL)}` : ""}`);
+    const j = await r.json().catch(() => null);
+    const txt = j?.responseData?.translatedText || "";
+    if (!r.ok || +j?.responseStatus !== 200 || /MYMEMORY WARNING|QUOTA/i.test(txt)) throw new Error(/QUOTA|WARNING/i.test(txt + (j?.responseDetails || "")) ? "Today's free translation limit is used up." : "Couldn't translate right now.");
+    parts.push(decodeHTML(txt));
+  }
+  const out = parts.join(" ");
+  trStore[text] = out; const keys = Object.keys(trStore); if (keys.length > 800) delete trStore[keys[0]];
+  lsSet("gre-tr", trStore); return out;
+}
+async function translateSentence() {
+  const w = sheetWord; if (!w) return;
+  keepInputs(); w.trLoading = true; w.trErr = ""; drawSheet();
+  try { w.tr = await translate(w.sentence); } catch (e) { w.trErr = navigator.onLine ? e.message : "You're offline."; }
+  w.trLoading = false; if (sheetWord === w) drawSheet();
 }
 function closeSheet() { sheetWord = null; $("#sheet").hidden = true; }
 
@@ -493,6 +619,8 @@ async function attachAudio(file) {
 /* ---------- events ---------- */
 document.addEventListener("submit", e => { if (e.target.id === "loginForm") onLogin(e); });
 document.addEventListener("click", e => {
+  const sEl = e.target.closest("#text .s");
+  if (syncMode && sEl) { anchorSentence(+sEl.dataset.i); return; }
   const t = e.target.closest("button,.w,#seek");
   if (!t) { if (!e.target.closest(".sheet-card")) closeSheet(); return; }
   if (t.classList.contains("w")) { openSheet(t); return; }
@@ -519,12 +647,20 @@ document.addEventListener("click", e => {
       if (mode === "mp3") { if (!mp3) break; mp3.paused ? mp3.play().catch(() => toast("Tap play again to start the audio")) : mp3.pause(); }
       else if (playing) { runId++; playing = false; tts.cancel(); renderBar(); } else playFrom(idx);
       break;
+    case "sprev": if (mp3 && starts) { const cur = sentenceAt(mp3.currentTime); seekSentence(mp3.currentTime - starts[cur] > 1.5 ? cur : cur - 1); } break;
+    case "snext": if (mp3 && starts) seekSentence(sentenceAt(mp3.currentTime) + 1); break;
+    case "sync-mode":
+      syncMode = !syncMode; t.textContent = syncMode ? "Done" : "Fix the highlight";
+      $("#syncHint").hidden = !syncMode; $("#text").classList.toggle("syncing", syncMode); closeSheet();
+      if (syncMode && mp3?.paused) mp3.play().catch(() => {});
+      break;
+    case "tr-sentence": translateSentence(); break;
     case "back10": if (mp3) mp3.currentTime = Math.max(0, mp3.currentTime - 10); break;
     case "fwd10": if (mp3) mp3.currentTime = Math.min(mp3.duration || 0, mp3.currentTime + 10); break;
     case "prev": idx = Math.max(0, idx - 1); playing ? playFrom(idx) : (setActive(idx), rememberPos()); break;
     case "next": idx = Math.min(sentences.length - 1, idx + 1); playing ? playFrom(idx) : (setActive(idx), rememberPos()); break;
     case "use-tts": if (mp3) mp3.pause(); playing = false; mode = "tts"; t.dataset.act = "use-mp3"; t.textContent = "Use the recording"; renderBar(); break;
-    case "use-mp3": runId++; tts?.cancel(); playing = false; mode = "mp3"; t.dataset.act = "use-tts"; t.textContent = "Use computer voice"; renderBar(); break;
+    case "use-mp3": runId++; tts?.cancel(); playing = false; mode = "mp3"; t.dataset.act = "use-tts"; t.textContent = "Use computer voice"; renderBar(); followAudio(true); break;
     case "close": closeSheet(); break;
     case "say": if (tts && sheetWord) { if (mode === "tts") { runId++; playing = false; renderBar(); } tts.cancel(); speak(sheetWord.word, () => {}); } break;
     case "say-review": { const w = S.words.find(x => x.id === queue[0]); if (tts && w) { tts.cancel(); speak(w.word, () => {}); } break; }
@@ -544,7 +680,12 @@ document.addEventListener("click", e => {
     case "import": doImport(t); break;
   }
 });
-document.addEventListener("dblclick", e => { const s = e.target.closest("#text .s"); if (s && tts && mode === "tts") { closeSheet(); playFrom(+s.dataset.i); } });
+document.addEventListener("dblclick", e => {
+  const s = e.target.closest("#text .s"); if (!s || syncMode) return;
+  closeSheet();
+  if (mode === "mp3" && mp3 && starts) { seekSentence(+s.dataset.i); mp3.play().catch(() => {}); }
+  else if (mode === "tts" && tts) playFrom(+s.dataset.i);
+});
 document.addEventListener("change", e => {
   const id = e.target.id;
   if (id === "rate") { lsSet("gre-rate", +e.target.value); if (mp3) mp3.playbackRate = +e.target.value; else if (playing) playFrom(idx); }

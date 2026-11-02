@@ -1,6 +1,6 @@
 // Keeps the app itself available offline. Audio is cached separately by the app (IndexedDB).
 // Bump VERSION whenever you change app files, so phones pick up the new version.
-const VERSION = "gre-v1";
+const VERSION = "gre-v2";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "stories.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
 const CDN = ["https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm"];
 
@@ -19,7 +19,7 @@ self.addEventListener("fetch", e => {
   if (!isStatic) return;
   // network first for the app's own files (so updates show up), cache as fallback offline
   if (isShell) {
-    e.respondWith(fetch(req).then(res => { const copy = res.clone(); caches.open(VERSION).then(c => c.put(req, copy)); return res; }).catch(() => caches.match(req, { ignoreSearch: true }).then(r => r || caches.match("index.html"))));
+    e.respondWith(fetch(req, { cache: "no-cache" }).then(res => { const copy = res.clone(); caches.open(VERSION).then(c => c.put(req, copy)); return res; }).catch(() => caches.match(req, { ignoreSearch: true }).then(r => r || caches.match("index.html"))));
     return;
   }
   // cache first for libraries and fonts
