@@ -480,7 +480,7 @@ function drawSheet() {
       : `<div class="def">${esc(w.def)}</div>${w.pt ? `<div class="pt">${esc(w.pt)}</div>` : ""}`}
     <div class="sent">
       <div class="sent-en">${esc(w.sentence)}</div>
-      ${w.tr ? `<div class="sent-pt">${esc(w.tr)}</div><div class="note">${byName(w.trBy)}</div>`
+      ${w.tr ? `<div class="sent-pt">${esc(w.tr)}</div><div class="note">${byName(w.trBy)}</div>${w.trBy === "mymemory" && w.trNote ? `<div class="status err">DeepL/Claude not used: ${esc(w.trNote)}</div>` : ""}`
         : w.trLoading ? `<div class="status">Translating…</div>`
         : `<button class="chip" data-act="tr-sentence">Translate this sentence</button>`}
       ${w.trErr ? `<div class="status err">${esc(w.trErr)} <a href="${gt}" target="_blank" rel="noopener">Open in Google Translate ↗</a></div>` : ""}
@@ -514,7 +514,7 @@ async function myMemory(text) {
   }
   return parts.join(" ");
 }
-let fnState = "unknown"; // "ok" | "missing"
+let fnState = "unknown", fnReason = ""; // "ok" | "missing"
 async function smartTranslate(kind, text, ctx = "") {
   const k = trKey(kind, text, ctx);
   if (trStore[k]) return trStore[k];
@@ -526,17 +526,21 @@ async function smartTranslate(kind, text, ctx = "") {
       const status = error?.context?.status;
       if (status === 404) fnState = "missing";
       try { fnErr = (await error?.context?.json())?.error || ""; } catch {}
+      fnReason = status === 404 ? "the function \"translate\" was not found (404)"
+        : status === 401 ? "not authorised (401) — sign out and in again, or check JWT verification"
+        : status ? `error ${status}${fnErr ? ": " + fnErr : ""}`
+        : `couldn't reach the function (${error?.message || "network"})`;
       console.warn("translate function:", status, fnErr || error?.message);
     }
   }
-  if (!res) res = { pt: await myMemory(text), def: "", by: "mymemory", note: fnErr };
+  if (!res) res = { pt: await myMemory(text), def: "", by: "mymemory", note: fnReason };
   if (res.by !== "mymemory") { trStore[k] = res; const keys = Object.keys(trStore); if (keys.length > 1500) delete trStore[keys[0]]; lsSet("gre-tr2", trStore); }
   return res;
 }
 async function translateSentence() {
   const w = sheetWord; if (!w) return;
   keepInputs(); w.trLoading = true; w.trErr = ""; drawSheet();
-  try { const r = await smartTranslate("sentence", w.sentence, w.para); w.tr = r.pt; w.trBy = r.by; }
+  try { const r = await smartTranslate("sentence", w.sentence, w.para); w.tr = r.pt; w.trBy = r.by; w.trNote = r.note || ""; }
   catch (e) { w.trErr = navigator.onLine ? e.message : "You're offline."; }
   w.trLoading = false; if (sheetWord === w) drawSheet();
 }
